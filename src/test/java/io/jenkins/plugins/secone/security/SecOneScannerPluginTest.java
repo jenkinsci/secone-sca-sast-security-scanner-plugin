@@ -16,6 +16,7 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.net.URI;
 import java.net.URISyntaxException;
 
 import org.apache.http.StatusLine;
@@ -226,7 +227,7 @@ public class SecOneScannerPluginTest {
 		CloseableHttpResponse httpResponse = mock(CloseableHttpResponse.class);
 
 		CloseableHttpClient client = mock(CloseableHttpClient.class);
-		when(objectFactory.createHttpClient()).thenReturn(client);
+		when(objectFactory.createHttpClient(any(URI.class))).thenReturn(client);
 
 		when(client.execute(httpPost)).thenReturn(httpResponse);
 
@@ -342,7 +343,7 @@ public class SecOneScannerPluginTest {
 		CloseableHttpResponse sastStatusHttpResponse = mock(CloseableHttpResponse.class);
 
 		CloseableHttpClient client = mock(CloseableHttpClient.class);
-		when(objectFactory.createHttpClient()).thenReturn(client);
+		when(objectFactory.createHttpClient(any(URI.class))).thenReturn(client);
 
 		// when(client.execute(httpPost)).thenReturn(scaHttpResponse);
 		when(client.execute(any(HttpPost.class))).thenReturn(scaHttpResponse).thenReturn(sastHttpResponse)
