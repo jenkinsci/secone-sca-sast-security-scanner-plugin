@@ -116,7 +116,7 @@ public class SecOneScannerPluginTest {
 				WORKSPACE_DIRECTORY_LOCATION + "/sample-initiate-sast-scan-response.txt");
 		plugin = new SecOneScannerPlugin("customCredentialsId", objectFactory, false);
 		when(taskListener.getLogger()).thenReturn(mock(PrintStream.class));
-		mockJenkkins();
+		mockJenkins();
 		mock(RestTemplate.class);
 	}
 
@@ -451,7 +451,7 @@ public class SecOneScannerPluginTest {
 		assertNull(plugin.getApiKey(run, taskListener));
 	}
 
-	private void mockJenkkins() {
+	private void mockJenkins() {
 		mockedJenkins = mockStatic(Jenkins.class);
 		when(Jenkins.get()).thenReturn(jenkins);
 		mockedCredentialsProvider = mockStatic(CredentialsProvider.class);

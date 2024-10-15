@@ -393,6 +393,14 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 						JSONObject responseJson = new JSONObject();
 						long startTime = System.currentTimeMillis();
 						long maxDuration = 10 * 60 * 1000; // 10 minutes
+
+						String statusCheckUrl = fossInstanceUrl + STATUS_CHECK_URL;
+
+						HttpPost statusPost = objectFactory.createHttpPost(statusCheckUrl);
+						statusPost.setHeader(API_KEY_HEADER, sec1ApiKey);
+						statusPost.setHeader("Content-Type", "application/json");
+						statusPost.setHeader("Accept", "application/json");
+
 						while (!StringUtils.equalsIgnoreCase("COMPLETED", scanStatus)) {
 							if (System.currentTimeMillis() - startTime > maxDuration) {
 								listener.getLogger().println("Sec1 SAST Security Scanner Report:");
@@ -407,11 +415,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 							// Sleep for 10 seconds before polling again
 							Thread.sleep(10000);
 
-							String statusCheckUrl = fossInstanceUrl + STATUS_CHECK_URL;
-							HttpPost statusPost = objectFactory.createHttpPost(statusCheckUrl);
-							statusPost.setHeader(API_KEY_HEADER, sec1ApiKey);
-							statusPost.setHeader("Content-Type", "application/json");
-							statusPost.setHeader("Accept", "application/json");
 							JSONObject statusPayload = new JSONObject();
 							JSONArray reportIdArray = new JSONArray();
 							reportIdArray.put(reportId);
@@ -504,6 +507,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			} catch (IOException ex) {
 				throw new AbortException(getErrorMessageInAnsi(
 						"Attention: Build Failed because of vulnerability threshold level breached."));
+			} catch (URISyntaxException e) {
+				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
 		} else {
 			logger.error("Issue while getting response from system.");
@@ -516,22 +521,28 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	private HttpResponse startSastScan(String apiUrl, JSONObject inputParamsMap, String sec1ApiKey) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
-
-		HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
-		httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
-		httpPost.setHeader("Content-Type", "application/json");
-		httpPost.setHeader("Accept", "application/json");
-		StringEntity stringEntity = new StringEntity(inputParamsMap.toString(), StandardCharsets.UTF_8);
-
-		httpPost.setEntity(stringEntity);
-
-		// httpPost.setURI();
 		CloseableHttpClient client = objectFactory.createHttpClient();
 		try {
+			HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
+			httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
+			httpPost.setHeader("Content-Type", "application/json");
+			httpPost.setHeader("Accept", "application/json");
+			StringEntity stringEntity = new StringEntity(inputParamsMap.toString(), StandardCharsets.UTF_8);
+
+			httpPost.setEntity(stringEntity);
+
 			HttpResponse response = client.execute(httpPost);
 			return response;
 		} catch (IOException e) {
 			logger.error("Issue while connecting to api.", e);
+		} catch (URISyntaxException e) {
+			logger.error("Check configured Sec1 API url => {}", apiUrl, e);
+		} finally {
+			try {
+				client.close();
+			} catch (IOException e) {
+				logger.error("Issue while closing the http client.", e);
+			}
 		}
 		return null;
 	}
@@ -845,17 +856,25 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		for (File file : fileList) {
 			multipartBodyBuilder.addBinaryBody("file", file);
 		}
-
-		org.apache.http.HttpEntity multipartBody = multipartBodyBuilder.build();
-		HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
-		httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
-		httpPost.setEntity(multipartBody);
 		CloseableHttpClient client = objectFactory.createHttpClient();
 		try {
+			org.apache.http.HttpEntity multipartBody = multipartBodyBuilder.build();
+			HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
+			httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
+			httpPost.setEntity(multipartBody);
+
 			HttpResponse response = client.execute(httpPost);
 			return response;
 		} catch (IOException e) {
 			logger.error("Issue while connecting to api.", e);
+		} catch (URISyntaxException e) {
+			logger.error("Check configured Sec1 API url => {}", apiUrl, e);
+		} finally {
+			try {
+				client.close();
+			} catch (IOException e) {
+				logger.error("Issue while closing the http client.", e);
+			}
 		}
 		return null;
 	}
