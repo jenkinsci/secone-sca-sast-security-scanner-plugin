@@ -31,18 +31,16 @@ public class ObjectFactory {
 		return post;
 	}
 
-	public CloseableHttpClient createHttpClient() {
-		CloseableHttpClient client;
+	public CloseableHttpClient createHttpClient(URI apiUri) {
+		Jenkins jenkins = Jenkins.getInstanceOrNull();
+		ProxyConfiguration proxyConfig = (jenkins != null) ? jenkins.proxy : null;
 
-		ProxyConfiguration proxy = getJenkinsProxyConfiguration();
-		if (proxy != null) {
-			HttpHost proxyHost = new HttpHost(proxy.name, proxy.port);
-			client = HttpClients.custom().setProxy(proxyHost).build();
+		if (proxyConfig != null && shouldUseProxy(proxyConfig, apiUri.getHost())) {
+			HttpHost proxyHost = new HttpHost(proxyConfig.name, proxyConfig.port);
+			return HttpClients.custom().setProxy(proxyHost).build();
 		} else {
-			client = HttpClients.custom().build();
+			return HttpClients.createDefault();
 		}
-
-		return client;
 	}
 
 	public String getGitFolderConfigPath() {

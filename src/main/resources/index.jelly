@@ -1,4 +1,4 @@
 <?jelly escape-by-default='true'?>
 <div>
-The plugin offers both Software Composition Analysis (SCA) and Static Application Security Testing (SAST) capabilities, allowing teams to scan SCM repositories for open-source vulnerabilities and analyze code for security issues early in the development process.
+Provides both Software Composition Analysis (SCA) and Static Application Security Testing (SAST) capabilities, enabling teams to scan SCM repositories for open-source vulnerabilities and analyze code for security issues early in development.
 </div>

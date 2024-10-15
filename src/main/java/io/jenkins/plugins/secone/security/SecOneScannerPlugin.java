@@ -372,7 +372,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		HttpResponse responseEntity = startSastScan(scanUrl, inputParamsMap, sec1ApiKey);
 		if (responseEntity != null && responseEntity.getStatusLine().getStatusCode() == 200) {
-			try {
+			String statusCheckUrl = fossInstanceUrl + STATUS_CHECK_URL;
+			try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(statusCheckUrl))) {
 				if (responseEntity.getEntity() != null) {
 					org.apache.http.HttpEntity httpScanResponseEntity = responseEntity.getEntity();
 					if (httpScanResponseEntity.getContent() != null) {
@@ -393,8 +394,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 						JSONObject responseJson = new JSONObject();
 						long startTime = System.currentTimeMillis();
 						long maxDuration = 10 * 60 * 1000; // 10 minutes
-
-						String statusCheckUrl = fossInstanceUrl + STATUS_CHECK_URL;
 
 						HttpPost statusPost = objectFactory.createHttpPost(statusCheckUrl);
 						statusPost.setHeader(API_KEY_HEADER, sec1ApiKey);
@@ -420,8 +419,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 							reportIdArray.put(reportId);
 							statusPayload.put("reportId", reportIdArray);
 							statusPost.setEntity(new StringEntity(statusPayload.toString()));
-
-							CloseableHttpClient client = objectFactory.createHttpClient();
 
 							HttpResponse statusResponse = client.execute(statusPost);
 
@@ -521,8 +518,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	private HttpResponse startSastScan(String apiUrl, JSONObject inputParamsMap, String sec1ApiKey) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
-		CloseableHttpClient client = objectFactory.createHttpClient();
-		try {
+		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(apiUrl))) {
 			HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
 			httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
 			httpPost.setHeader("Content-Type", "application/json");
@@ -537,12 +533,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			logger.error("Issue while connecting to api.", e);
 		} catch (URISyntaxException e) {
 			logger.error("Check configured Sec1 API url => {}", apiUrl, e);
-		} finally {
-			try {
-				client.close();
-			} catch (IOException e) {
-				logger.error("Issue while closing the http client.", e);
-			}
 		}
 		return null;
 	}
@@ -856,8 +846,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		for (File file : fileList) {
 			multipartBodyBuilder.addBinaryBody("file", file);
 		}
-		CloseableHttpClient client = objectFactory.createHttpClient();
-		try {
+		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(apiUrl))) {
 			org.apache.http.HttpEntity multipartBody = multipartBodyBuilder.build();
 			HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
 			httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
@@ -869,12 +858,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			logger.error("Issue while connecting to api.", e);
 		} catch (URISyntaxException e) {
 			logger.error("Check configured Sec1 API url => {}", apiUrl, e);
-		} finally {
-			try {
-				client.close();
-			} catch (IOException e) {
-				logger.error("Issue while closing the http client.", e);
-			}
 		}
 		return null;
 	}
