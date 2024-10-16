@@ -215,11 +215,6 @@ public class SecOneScannerPluginTest {
 		when(restTemplate.exchange(eq(manifestUrl), eq(HttpMethod.GET), any(HttpEntity.class), eq(String.class)))
 				.thenReturn(responseEntity);
 
-		MultipartEntityBuilder multipartBodyBuilder = mock(MultipartEntityBuilder.class);
-		when(objectFactory.createMultipartBodyBuilder()).thenReturn(multipartBodyBuilder);
-
-		when(multipartBodyBuilder.build()).thenReturn(scaHttpEntity);
-
 		HttpPost httpPost = mock(HttpPost.class);
 
 		when(objectFactory.createHttpPost(anyString())).thenReturn(httpPost);
@@ -329,11 +324,7 @@ public class SecOneScannerPluginTest {
 		when(restTemplate.exchange(eq(manifestUrl), eq(HttpMethod.GET), any(HttpEntity.class), eq(String.class)))
 				.thenReturn(responseEntity);
 
-		MultipartEntityBuilder multipartBodyBuilder = mock(MultipartEntityBuilder.class);
-		when(objectFactory.createMultipartBodyBuilder()).thenReturn(multipartBodyBuilder);
-
-		when(multipartBodyBuilder.build()).thenReturn(scaHttpEntity);
-
+		
 		HttpPost httpPost = mock(HttpPost.class);
 
 		when(objectFactory.createHttpPost(anyString())).thenReturn(httpPost);

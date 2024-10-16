@@ -15,17 +15,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.math.NumberUtils;
+import org.apache.http.ConnectionClosedException;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
-import org.apache.http.entity.mime.MultipartEntityBuilder;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.jenkinsci.Symbol;
 import org.jenkinsci.plugins.plaincredentials.StringCredentials;
@@ -35,14 +34,6 @@ import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.DataBoundSetter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
-import org.springframework.util.CollectionUtils;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.RestTemplate;
 
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 
@@ -73,15 +64,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	private static final String API_CONTEXT = "/rest";
 
-	private static final String SCA_SCAN_API = "/foss/scan/file";
+	private static final String SCA_SCAN_API = "/foss/ascan?enableSbom=true";
+
+	private static final String SCA_STATUS_CHECK_URL = "/foss/report/status";
 
 	private static final String INSTANCE_URL = "SEC1_INSTANCE_URL";
 
-	private static final String SUPPORTED_MANIFEST = "/foss/supported-manifest";
-
 	private static final String SAST_SCAN_API = "/foss/sast/ascan";
 
-	private static final String STATUS_CHECK_URL = "/sast/asset/report/status";
+	private static final String SAST_STATUS_CHECK_URL = "/sast/asset/report/status";
 
 	private static final String API_KEY = "SEC1_API_KEY";
 
@@ -290,24 +281,26 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		StringBuilder fossInstanceUrl = new StringBuilder();
 		StringBuilder scmUrl = new StringBuilder();
+
 		try {
 			fossInstanceUrl.append(getInstanceUrl(run.getEnvironment(listener), listener));
 		} catch (IOException | InterruptedException e) {
 			throw new AbortException(getErrorMessageInAnsi("Exception while getting environment variables."));
 		}
-
+		String gitUrl = null;
 		try {
-			String gitUrl = getGitUrl(workingDirectory);
+			gitUrl = getGitUrl(workingDirectory);
 			if (StringUtils.isBlank(gitUrl)) {
-				throw new AbortException(getErrorMessageInAnsi(
-						"No valid manifest found in working directory. Please check your configuration."));
+				gitUrl = run.getEnvironment(listener).get("GIT_URL");
 			}
-			scmUrl.append(gitUrl);
-		} catch (IOException e) {
-			throw new AbortException(
-					getErrorMessageInAnsi("Exception while getting getting scm url from .git folder of workspace."));
+		} catch (IOException | InterruptedException e) {
+			logger.error("Error - Check your git configuration. ", e);
 		}
-
+		if (StringUtils.isBlank(gitUrl)) {
+			throw new AbortException(
+					getErrorMessageInAnsi("Exception while getting getting git url. Check your git configuration."));
+		}
+		scmUrl.append(gitUrl);
 		StringBuilder appName = new StringBuilder();
 		try {
 			appName.append(getSubUrl(scmUrl.toString()));
@@ -316,21 +309,33 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			logger.info("Issue extracting app name from url, setting it to default");
 			appName = new StringBuilder(scmUrl);
 		}
+		String banchName = null;
+		try {
+			banchName = getGitBranch(workingDirectory);
+			if (StringUtils.isBlank(banchName)) {
+				banchName = run.getEnvironment(listener).get("GIT_BRANCH");
+			}
+		} catch (Exception ex) {
+			logger.error("Error - extracting branch name for scm url : {}", scmUrl, ex);
+		}
 		int result = 0;
 		result = runScaScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
-				runSec1SastSecurity);
+				runSec1SastSecurity, banchName);
+
 		if (runSec1SastSecurity) {
 			try {
-				result = runSastScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName);
+				result = runSastScan(fossInstanceUrl, listener, sec1ApiKey, workingDirectory, scmUrl, appName,
+						banchName);
 			} catch (InterruptedException ex) {
 				printLogs(listener.getLogger(), "Error while running sast scan. Failed to wait for result.", "r");
 			}
 		}
+
 		return result;
 	}
 
 	private int runSastScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
-			String workingDirectory, StringBuilder scmUrl, StringBuilder appName)
+			String workingDirectory, StringBuilder scmUrl, StringBuilder appName, String branchName)
 			throws AbortException, InterruptedException {
 		printSastStartMessage(listener);
 		int result = 0;
@@ -338,14 +343,10 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		JSONObject inputParamsMap = new JSONObject();
 		JSONObject requestJson = new JSONObject();
 		requestJson.put("location", scmUrl);
-		try {
-			String banchName = getGitBranch(workingDirectory);
-			if (StringUtils.isNotBlank(banchName)) {
-				requestJson.put("branchName", banchName);
-			}
-		} catch (Exception ex) {
-			logger.error("Error - extracting branch name for scm url : {}", scmUrl, ex);
+		if (StringUtils.isNotBlank(branchName)) {
+			requestJson.put("branchName", getSanitizedBranchName(branchName));
 		}
+
 		requestJson.put("appName", appName);
 		requestJson.put("source", "jenkins");
 
@@ -370,19 +371,20 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		}
 		String scanUrl = fossInstanceUrl + API_CONTEXT + SAST_SCAN_API;
 
-		HttpResponse responseEntity = startSastScan(scanUrl, inputParamsMap, sec1ApiKey);
+		HttpResponse responseEntity = triggerSastScan(scanUrl, inputParamsMap, sec1ApiKey);
 		if (responseEntity != null && responseEntity.getStatusLine().getStatusCode() == 200) {
-			String statusCheckUrl = fossInstanceUrl + STATUS_CHECK_URL;
-			try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(statusCheckUrl))) {
+			String sastStatusCheckUrl = fossInstanceUrl + SAST_STATUS_CHECK_URL;
+			try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(sastStatusCheckUrl))) {
 				if (responseEntity.getEntity() != null) {
 					org.apache.http.HttpEntity httpScanResponseEntity = responseEntity.getEntity();
 					if (httpScanResponseEntity.getContent() != null) {
-						InputStream rawContent = httpScanResponseEntity.getContent();
-						byte[] bytes = IOUtils.toByteArray(rawContent);
-						String content = new String(bytes, Charset.defaultCharset().name());
+						JSONArray responseJsonArray = null;
+						try (InputStream rawContent = httpScanResponseEntity.getContent()) {
+							byte[] bytes = IOUtils.toByteArray(rawContent);
+							String content = new String(bytes, Charset.defaultCharset().name());
 
-						JSONArray responseJsonArray = new JSONArray(content);
-
+							responseJsonArray = new JSONArray(content);
+						}
 						if (responseJsonArray == null || responseJsonArray.length() == 0) {
 							throw new AbortException(
 									getErrorMessageInAnsi("Error while processing scan result. Failing the build."));
@@ -395,7 +397,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 						long startTime = System.currentTimeMillis();
 						long maxDuration = 10 * 60 * 1000; // 10 minutes
 
-						HttpPost statusPost = objectFactory.createHttpPost(statusCheckUrl);
+						HttpPost statusPost = objectFactory.createHttpPost(sastStatusCheckUrl);
 						statusPost.setHeader(API_KEY_HEADER, sec1ApiKey);
 						statusPost.setHeader("Content-Type", "application/json");
 						statusPost.setHeader("Accept", "application/json");
@@ -424,23 +426,25 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 							org.apache.http.HttpEntity statusEntity = statusResponse.getEntity();
 
-							rawContent = statusEntity.getContent();
-							bytes = IOUtils.toByteArray(rawContent);
+							try (InputStream statusRawContent = statusEntity.getContent()) {
+								byte[] statusBytes = IOUtils.toByteArray(statusRawContent);
 
-							content = new String(bytes, Charset.defaultCharset().name());
-
-							JSONArray statusArray = new JSONArray(content);
-							responseJson = statusArray.getJSONObject(0);
-							scanStatus = responseJson.getString("scanStatus");
+								String statusContent = new String(statusBytes, Charset.defaultCharset().name());
+								JSONArray statusArray = new JSONArray(statusContent);
+								responseJson = statusArray.getJSONObject(0);
+								scanStatus = responseJson.getString("scanStatus");
+							}
 
 							if (StringUtils.equalsIgnoreCase("SCANNING", scanStatus)) {
-								listener.getLogger().println("Scan is still in progress...");
+								listener.getLogger().println("SAST Scan is still in progress...");
 							} else if (scanStatus.equals("FAILED")) {
-								listener.getLogger().println("Sec1 SAST Security Scanner Report:");
-								listener.getLogger().println("Report ID: " + reportId);
-								listener.getLogger().println(
-										"Report URL: https://scopy.sec1.io/sast-advance-dashboard/" + reportId);
-								listener.getLogger().println("Status: FAILURE");
+								listener.getLogger()
+										.println("==================== SEC1 SAST SCAN RESULT ====================");
+								// listener.getLogger().println("Sec1 SAST Security Scanner Report:");
+								listener.getLogger().println("Report Url             "
+										+ "Report URL: https://scopy.sec1.io/sast-advance-dashboard/" + reportId);
+								listener.getLogger().println();
+								listener.getLogger().println("Status                 FAILURE");
 								throw new AbortException(
 										getErrorMessageInAnsi("Sec1 SAST Security Scan Finished with failures"));
 							}
@@ -453,7 +457,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 							int low = responseJson.optInt("low");
 
 							listener.getLogger()
-									.println("==================== SEC1 SCA SCAN RESULT ====================");
+									.println("==================== SEC1 SAST SCAN RESULT ====================");
 							if (StringUtils.isBlank(responseJson.optString("errorMessage"))) {
 								String reportUrl = "https://scopy.sec1.io/sast-advance-dashboard/" + reportId;
 								listener.getLogger().println("Vulnerabilities Found  " + "Critical " + critical + ","
@@ -463,7 +467,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 								// listener.getLogger().println("=====================================================");
 
 								if (applyThreshold) {
-
 									if (critical != 0 && threshold.getCriticalThreshold() != null
 											&& NumberUtils.isDigits(threshold.getCriticalThreshold())
 											&& critical >= Integer.parseInt(threshold.getCriticalThreshold())) {
@@ -489,6 +492,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 										result = failBuildOnThresholdBreach(message, listener, threshold);
 									}
 								}
+
 							} else {
 								printLogs(listener.getLogger(),
 										"Error Details : " + responseJson.optString("errorMessage"), "r");
@@ -501,9 +505,12 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 								getErrorMessageInAnsi("Error while processing sast scan result. Failing the build."));
 					}
 				}
-			} catch (IOException ex) {
+			} catch (AbortException ex) {
+				printSastEndMessage(listener);
 				throw new AbortException(getErrorMessageInAnsi(
-						"Attention: Build Failed because of vulnerability threshold level breached."));
+						"Attention: Build Failed because of vulnerability threshold level breached for sast."));
+			} catch (IOException ex) {
+				throw new AbortException(getErrorMessageInAnsi("Attention: Build Failed. Check configuration."));
 			} catch (URISyntaxException e) {
 				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
@@ -511,13 +518,19 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			logger.error("Issue while getting response from system.");
 			throw new AbortException(getErrorMessageInAnsi("Error while processing scan result. Failing the build."));
 		}
+
 		printSastEndMessage(listener);
 		return result;
 	}
 
-	private HttpResponse startSastScan(String apiUrl, JSONObject inputParamsMap, String sec1ApiKey) {
-		HttpHeaders headers = new HttpHeaders();
-		headers.setContentType(MediaType.APPLICATION_JSON);
+	private String getSanitizedBranchName(String branchName) {
+		if (branchName != null && branchName.startsWith("origin/")) {
+			branchName = branchName.substring("origin/".length());
+		}
+		return branchName;
+	}
+
+	private HttpResponse triggerSastScan(String apiUrl, JSONObject inputParamsMap, String sec1ApiKey) {
 		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(apiUrl))) {
 			HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
 			httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
@@ -555,123 +568,187 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	}
 
 	private int runScaScan(StringBuilder fossInstanceUrl, TaskListener listener, String sec1ApiKey,
-			String workingDirectory, StringBuilder scmUrl, StringBuilder appName, boolean runSec1SastSecurity)
-			throws AbortException {
+			String workingDirectory, StringBuilder scmUrl, StringBuilder appName, boolean runSec1SastSecurity,
+			String branchName) throws AbortException {
 
 		printScaStartMessage(listener);
 
 		int result = 0;
 
-		String manifestUrl = fossInstanceUrl + API_CONTEXT + SUPPORTED_MANIFEST;
 		String scanUrl = fossInstanceUrl + API_CONTEXT + SCA_SCAN_API;
+		JSONObject rquestJson = new JSONObject();
+		JSONArray scanRequestList = new JSONArray();
 
-		List<String> supportedManifestList = getSupportedManifest(manifestUrl, sec1ApiKey, listener);
+		JSONObject inputParamsMap = new JSONObject();
+		inputParamsMap.put("location", scmUrl);
+		inputParamsMap.put("appName", appName);
+		inputParamsMap.put("source", "jenkins");
+		if (StringUtils.isNotBlank(branchName)) {
+			inputParamsMap.put("branchName", getSanitizedBranchName(branchName));
+		}
 
-		if (!CollectionUtils.isEmpty(supportedManifestList)) {
+		scanRequestList.put(inputParamsMap);
+		rquestJson.put("scanRequestList", scanRequestList);
 
-			List<File> scanFileList = findFilesInDirectory(workingDirectory, supportedManifestList);
-			listener.getLogger().println("Files to be scanned : " + scanFileList);
-			if (CollectionUtils.isEmpty(scanFileList)) {
-				if (!runSec1SastSecurity) {
-					throw new AbortException(
-							getErrorMessageInAnsi("No supported manifest found. Supported manifest list : ")
-									+ supportedManifestList);
-				} else {
-					listener.getLogger()
-							.println(getErrorMessageInAnsi("No supported manifest found. Supported manifest list : ")
-									+ supportedManifestList);
-					listener.getLogger().println(getErrorMessageInAnsi("Skipping SCA scan."));
-				}
-			}
+		listener.getLogger().println("==================== SEC1 SCA SCAN CONFIG ====================");
+		listener.getLogger().println("SCM Url                " + scmUrl);
+		listener.getLogger().println("Threshold Enabled      " + applyThreshold);
+		if (threshold != null && applyThreshold) {
+			listener.getLogger().println("Threshold Values       " + "Critical "
+					+ (StringUtils.isNotBlank(threshold.getCriticalThreshold()) ? threshold.getCriticalThreshold()
+							: "NA")
+					+ "," + " High "
+					+ (StringUtils.isNotBlank(threshold.getHighThreshold()) ? threshold.getHighThreshold() : "NA") + ","
+					+ " Medium "
+					+ (StringUtils.isNotBlank(threshold.getMediumThreshold()) ? threshold.getMediumThreshold() : "NA")
+					+ "," + " Low "
+					+ (StringUtils.isNotBlank(threshold.getLowThreshold()) ? threshold.getLowThreshold() : "NA"));
+		}
 
-			JSONObject inputParamsMap = new JSONObject();
-			inputParamsMap.put("location", scmUrl);
-			inputParamsMap.put("appName", appName);
-			inputParamsMap.put("source", "jenkins");
-			inputParamsMap.put("dirScan", true);
-
-			listener.getLogger().println("==================== SEC1 SCA SCAN CONFIG ====================");
-			listener.getLogger().println("SCM Url                " + scmUrl);
-			listener.getLogger().println("Threshold Enabled      " + applyThreshold);
-			if (threshold != null && applyThreshold) {
-				listener.getLogger().println("Threshold Values       " + "Critical "
-						+ (StringUtils.isNotBlank(threshold.getCriticalThreshold()) ? threshold.getCriticalThreshold()
-								: "NA")
-						+ "," + " High "
-						+ (StringUtils.isNotBlank(threshold.getHighThreshold()) ? threshold.getHighThreshold() : "NA")
-						+ "," + " Medium "
-						+ (StringUtils.isNotBlank(threshold.getMediumThreshold()) ? threshold.getMediumThreshold()
-								: "NA")
-						+ "," + " Low "
-						+ (StringUtils.isNotBlank(threshold.getLowThreshold()) ? threshold.getLowThreshold() : "NA"));
-			}
-
-			HttpResponse responseEntity = scanFiles(scanUrl, scanFileList, inputParamsMap.toString(), sec1ApiKey);
-			if (responseEntity != null && responseEntity.getStatusLine().getStatusCode() == 200) {
-				try {
-					if (responseEntity.getEntity() != null) {
-						org.apache.http.HttpEntity httpScanResponseEntity = responseEntity.getEntity();
-						if (httpScanResponseEntity.getContent() != null) {
-							InputStream rawContent = httpScanResponseEntity.getContent();
+		HttpResponse responseEntity = triggerScaScan(scanUrl, rquestJson.toString(), sec1ApiKey);
+		if (responseEntity != null && responseEntity.getStatusLine().getStatusCode() == 200) {
+			String scaStatusCheckUrl = fossInstanceUrl + SCA_STATUS_CHECK_URL;
+			try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(scaStatusCheckUrl))) {
+				if (responseEntity.getEntity() != null) {
+					org.apache.http.HttpEntity httpScanResponseEntity = responseEntity.getEntity();
+					if (httpScanResponseEntity.getContent() != null) {
+						JSONArray responseJsonArray = null;
+						try (InputStream rawContent = httpScanResponseEntity.getContent()) {
 							byte[] bytes = IOUtils.toByteArray(rawContent);
 							String content = new String(bytes, Charset.defaultCharset().name());
-							JSONObject responseJson = new JSONObject(content);
-							if (responseJson.has("cveCountDetails")) {
-								int critical = responseJson.optJSONObject("cveCountDetails") != null
-										? responseJson.getJSONObject("cveCountDetails").optInt("CRITICAL")
+							responseJsonArray = new JSONArray(content);
+						}
+						if (responseJsonArray == null || responseJsonArray.length() == 0) {
+							throw new AbortException(
+									getErrorMessageInAnsi("Error while processing scan result. Failing the build."));
+						}
+
+						String reportId = responseJsonArray.getJSONObject(0).optString("uuid");
+
+						String scanStatus = "INITIATED";
+						long startTime = System.currentTimeMillis();
+						long maxDuration = 10 * 60 * 1000; // 10 minutes
+
+						HttpPost statusPost = objectFactory.createHttpPost(scaStatusCheckUrl);
+						statusPost.setHeader(API_KEY_HEADER, sec1ApiKey);
+						statusPost.setHeader("Content-Type", "application/json");
+						statusPost.setHeader("Accept", "application/json");
+						JSONObject responseJson = null;
+						while (!StringUtils.equalsIgnoreCase("COMPLETED", scanStatus)) {
+							if (System.currentTimeMillis() - startTime > maxDuration) {
+								listener.getLogger().println("Sec1 SCA Security Scanner Report:");
+								listener.getLogger().println("Report ID              " + reportId);
+								listener.getLogger()
+										.println("Report Url           https://scopy.sec1.io/dashboard-scan-details/"
+												+ reportId);
+								listener.getLogger().println("Status                 FAILURE");
+								throw new AbortException(
+										getErrorMessageInAnsi("Sec1 SCA Security Scan timed out after 10 minutes"));
+							}
+
+							// Sleep for 10 seconds before polling again
+							Thread.sleep(10000);
+
+							JSONArray reportIdArray = new JSONArray();
+							reportIdArray.put(reportId);
+							statusPost.setEntity(new StringEntity(reportIdArray.toString()));
+
+							HttpResponse statusResponse = client.execute(statusPost);
+
+							org.apache.http.HttpEntity statusEntity = statusResponse.getEntity();
+
+							try (InputStream statusRawContent = statusEntity.getContent()) {
+								byte[] statusBytes = IOUtils.toByteArray(statusRawContent);
+
+								String statusContent = new String(statusBytes, Charset.defaultCharset().name());
+
+								responseJson = new JSONObject(statusContent);
+							}
+							scanStatus = responseJson.getJSONObject(reportId).getString("status");
+							if (!StringUtils.equalsIgnoreCase("FAILED", scanStatus)
+									&& !StringUtils.equalsIgnoreCase("COMPLETED", scanStatus)) {
+								listener.getLogger().println("SCA Scan is still in progress...");
+							} else if (scanStatus.equals("FAILED")) {
+								JSONObject scanResult = responseJson.getJSONObject(reportId)
+										.optJSONObject("scannerResponseEntity");
+								listener.getLogger()
+										.println("==================== SEC1 SCA SCAN RESULT ====================");
+								if (scanResult != null) {
+									listener.getLogger()
+											.println("Report Url             " + scanResult.optString("reportUrl"));
+								}
+								listener.getLogger().println("Status                 FAILURE");
+								throw new AbortException(
+										getErrorMessageInAnsi("Sec1 SCA Security Scan Finished with failures"));
+							}
+						}
+						if (responseJson != null) {
+							JSONObject scanResult = responseJson.getJSONObject(reportId)
+									.optJSONObject("scannerResponseEntity");
+							if (scanResult != null && scanResult.has("cveCountDetails")) {
+								int critical = scanResult.optJSONObject("cveCountDetails") != null
+										? scanResult.getJSONObject("cveCountDetails").optInt("CRITICAL")
 										: 0;
-								int high = responseJson.optJSONObject("cveCountDetails") != null
-										? responseJson.getJSONObject("cveCountDetails").optInt("HIGH")
+								int high = scanResult.optJSONObject("cveCountDetails") != null
+										? scanResult.getJSONObject("cveCountDetails").optInt("HIGH")
 										: 0;
-								int medium = responseJson.optJSONObject("cveCountDetails") != null
-										? responseJson.getJSONObject("cveCountDetails").optInt("MEDIUM")
+								int medium = scanResult.optJSONObject("cveCountDetails") != null
+										? scanResult.getJSONObject("cveCountDetails").optInt("MEDIUM")
 										: 0;
-								int low = responseJson.optJSONObject("cveCountDetails") != null
-										? responseJson.getJSONObject("cveCountDetails").optInt("LOW")
+								int low = scanResult.optJSONObject("cveCountDetails") != null
+										? scanResult.getJSONObject("cveCountDetails").optInt("LOW")
 										: 0;
 
 								listener.getLogger()
 										.println("==================== SEC1 SCA SCAN RESULT ====================");
-								if (StringUtils.isBlank(responseJson.optString("errorMessage"))) {
+								if (StringUtils.isBlank(scanResult.optString("errorMessage"))) {
 									listener.getLogger().println("Vulnerabilities Found  " + "Critical " + critical
 											+ "," + " High " + high + "," + " Medium " + medium + "," + " Low " + low);
 									listener.getLogger().println(
-											"RAG Status             " + responseJson.optString("overallRagStatus"));
+											"RAG Status             " + scanResult.optString("overallRagStatus"));
 									listener.getLogger()
-											.println("Report Url             " + responseJson.optString("reportUrl"));
-
-									// listener.getLogger().println("=====================================================");
+											.println("Report Url             " + scanResult.optString("reportUrl"));
 
 									if (applyThreshold) {
-
-										if (critical != 0 && threshold.getCriticalThreshold() != null
-												&& NumberUtils.isDigits(threshold.getCriticalThreshold())
-												&& critical >= Integer.parseInt(threshold.getCriticalThreshold())) {
-											String message = "Critical Vulnerability Threshold breached.";
-											result = failBuildOnThresholdBreach(message, listener, threshold);
-										}
-										if (high != 0 && threshold.getHighThreshold() != null
-												&& NumberUtils.isDigits(threshold.getHighThreshold())
-												&& high >= Integer.parseInt(threshold.getHighThreshold())) {
-											String message = "High Vulnerability Threshold breached.";
-											result = failBuildOnThresholdBreach(message, listener, threshold);
-										}
-										if (medium != 0 && threshold.getMediumThreshold() != null
-												&& NumberUtils.isDigits(threshold.getMediumThreshold())
-												&& medium >= Integer.parseInt(threshold.getMediumThreshold())) {
-											String message = "Medium Vulnerability Threshold breached.";
-											result = failBuildOnThresholdBreach(message, listener, threshold);
-										}
-										if (low != 0 && threshold.getLowThreshold() != null
-												&& NumberUtils.isDigits(threshold.getLowThreshold())
-												&& low >= Integer.parseInt(threshold.getLowThreshold())) {
-											String message = "Low Vulnerability Threshold breached.";
-											result = failBuildOnThresholdBreach(message, listener, threshold);
+										try {
+											if (critical != 0 && threshold.getCriticalThreshold() != null
+													&& NumberUtils.isDigits(threshold.getCriticalThreshold())
+													&& critical >= Integer.parseInt(threshold.getCriticalThreshold())) {
+												String message = "Critical Vulnerability Threshold breached.";
+												result = failBuildOnThresholdBreach(message, listener, threshold);
+											}
+											if (high != 0 && threshold.getHighThreshold() != null
+													&& NumberUtils.isDigits(threshold.getHighThreshold())
+													&& high >= Integer.parseInt(threshold.getHighThreshold())) {
+												String message = "High Vulnerability Threshold breached.";
+												result = failBuildOnThresholdBreach(message, listener, threshold);
+											}
+											if (medium != 0 && threshold.getMediumThreshold() != null
+													&& NumberUtils.isDigits(threshold.getMediumThreshold())
+													&& medium >= Integer.parseInt(threshold.getMediumThreshold())) {
+												String message = "Medium Vulnerability Threshold breached.";
+												result = failBuildOnThresholdBreach(message, listener, threshold);
+											}
+											if (low != 0 && threshold.getLowThreshold() != null
+													&& NumberUtils.isDigits(threshold.getLowThreshold())
+													&& low >= Integer.parseInt(threshold.getLowThreshold())) {
+												String message = "Low Vulnerability Threshold breached.";
+												result = failBuildOnThresholdBreach(message, listener, threshold);
+											}
+										} catch (AbortException ex) {
+											if (!runSec1SastSecurity) {
+												throw new AbortException(getErrorMessageInAnsi(
+														"Attention: Build Failed because of vulnerability threshold level breached for sca."));
+											} else {
+												printLogs(listener.getLogger(),
+														"Attention: Build Failed because of vulnerability threshold level breached for sca.",
+														"r");
+											}
 										}
 									}
 								} else {
 									printLogs(listener.getLogger(),
-											"Error Details : " + responseJson.optString("errorMessage"), "r");
+											"Error Details : " + scanResult.optString("errorMessage"), "r");
 									result = 2;
 								}
 							}
@@ -685,31 +762,39 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 										"Error while processing scan result. Failing the build.", "r");
 							}
 						}
-					}
-				} catch (IOException ex) {
-					// throw new AbortException(ex.getMessage());
-					if (!runSec1SastSecurity) {
-						throw new AbortException(getErrorMessageInAnsi(
-								"Attention: Build Failed because of vulnerability threshold level breached for sca."));
 					} else {
-						printLogs(listener.getLogger(),
-								"Attention: Build Failed because of vulnerability threshold level breached for sca.",
-								"r");
+						logger.info("Invalid content recevied");
+						if (!runSec1SastSecurity) {
+							throw new AbortException(
+									getErrorMessageInAnsi("Error while processing scan result. Failing the build."));
+						} else {
+							printLogs(listener.getLogger(), "Error while processing scan result. Failing the build.",
+									"r");
+						}
 					}
 				}
-			} else {
-				logger.error("Issue while getting response from system.");
-				if (!runSec1SastSecurity) {
-					throw new AbortException(
-							getErrorMessageInAnsi("Error while processing sca scan result. Failing the build."));
-				} else {
-					printLogs(listener.getLogger(), "Error while processing sca scan result. Failing the build.", "r");
-				}
+			} catch (AbortException ex) {
+				throw ex;
+			} catch (ConnectionClosedException ex) {
+				logger.info("Attention: Connectivity issue. Please try again.", ex);
+				throw new AbortException(getErrorMessageInAnsi("Attention: Connectivity issue. Please try again."));
+			} catch (IOException | InterruptedException e) {
+				logger.info("Build Failed. Check configuration.", e);
+				throw new AbortException(getErrorMessageInAnsi("Attention: Build Failed. Check configuration."));
+			} catch (URISyntaxException e) {
+				throw new AbortException(getErrorMessageInAnsi("Attention: Check configured Sec1 API url."));
 			}
 		} else {
-			throw new AbortException(
-					getErrorMessageInAnsi("No supported manifest list found. Check you connectivity with Sec1 Api : ")
-							+ fossInstanceUrl);
+			if (responseEntity != null && responseEntity.getStatusLine().getStatusCode() == 401) {
+				throw new AbortException(getErrorMessageInAnsi("401 Unauthorized. Check your api key."));
+			}
+			logger.error("Issue while getting response from system.");
+			if (!runSec1SastSecurity) {
+				throw new AbortException(
+						getErrorMessageInAnsi("Error while processing sca scan result. Failing the build."));
+			} else {
+				printLogs(listener.getLogger(), "Error while processing sca scan result. Failing the build.", "r");
+			}
 		}
 		printScaEndMessage(listener);
 		return result;
@@ -737,43 +822,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		}
 	}
 
-	private List<String> getSupportedManifest(String apiUrl, String apiKey, TaskListener listener)
-			throws AbortException {
-		HttpHeaders headers = new HttpHeaders();
-		headers.set(API_KEY_HEADER, apiKey);
-
-		HttpEntity<?> entity = new HttpEntity<>(headers);
-
-		try {
-			RestTemplate restTemplate = objectFactory.createRestTemplate();
-			ResponseEntity<String> manifestResponseEntity = restTemplate.exchange(apiUrl, HttpMethod.GET, entity,
-					String.class);
-			JSONObject responseJson = new JSONObject(manifestResponseEntity.getBody());
-			return parseJsonToDataList(responseJson);
-		} catch (HttpClientErrorException e) {
-			throw new AbortException(getErrorMessageInAnsi(e.getResponseBodyAsString()));
-		} catch (Exception ex) {
-			listener.error("" + ex);
-			throw new AbortException(getErrorMessageInAnsi("Error while scanning the application. Failing the build."));
-		}
-	}
-
 	private String getErrorMessageInAnsi(String message) {
 		if (printInAnsiColor) {
 			return "\u001B[31m" + message + "\u001B[0m";
 		}
 		return message;
-	}
-
-	private List<String> parseJsonToDataList(JSONObject jsonObject) {
-		List<String> dataList = new ArrayList<>();
-		if (jsonObject.has("data")) {
-			JSONArray dataArray = jsonObject.getJSONArray("data");
-			for (int i = 0; i < dataArray.length(); i++) {
-				dataList.add(dataArray.getString(i));
-			}
-		}
-		return dataList;
 	}
 
 	private int failBuildOnThresholdBreach(String message, TaskListener listener, Threshold threshold)
@@ -833,25 +886,15 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		}
 	}
 
-	private HttpResponse scanFiles(String apiUrl, List<File> fileList, String requestParameter, String sec1ApiKey) {
+	private HttpResponse triggerScaScan(String apiUrl, String inputParamsMap, String sec1ApiKey) {
 
-		HttpHeaders headers = new HttpHeaders();
-		headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-		headers.set(API_KEY_HEADER, sec1ApiKey);
-
-		MultipartEntityBuilder multipartBodyBuilder = objectFactory.createMultipartBodyBuilder();
-
-		multipartBodyBuilder.addTextBody("request", requestParameter);
-
-		for (File file : fileList) {
-			multipartBodyBuilder.addBinaryBody("file", file);
-		}
 		try (CloseableHttpClient client = objectFactory.createHttpClient(new URI(apiUrl))) {
-			org.apache.http.HttpEntity multipartBody = multipartBodyBuilder.build();
 			HttpPost httpPost = objectFactory.createHttpPost(apiUrl);
-			httpPost.addHeader(API_KEY_HEADER, sec1ApiKey);
-			httpPost.setEntity(multipartBody);
-
+			httpPost.setHeader("Content-Type", "application/json");
+			httpPost.setHeader("Accept", "application/json");
+			httpPost.setHeader(API_KEY_HEADER, sec1ApiKey);
+			StringEntity stringEntity = new StringEntity(inputParamsMap, StandardCharsets.UTF_8);
+			httpPost.setEntity(stringEntity);
 			HttpResponse response = client.execute(httpPost);
 			return response;
 		} catch (IOException e) {
@@ -862,25 +905,11 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return null;
 	}
 
-	private List<File> findFilesInDirectory(String directoryPath, List<String> targetFileNames) {
-		List<File> matchingFiles = new ArrayList<>();
-
-		File directory = new File(directoryPath);
-		File[] files = directory.listFiles();
-
-		if (files != null) {
-			for (File file : files) {
-				if (file.isFile() && targetFileNames.contains(file.getName())) {
-					matchingFiles.add(file);
-				}
-			}
-		}
-		return matchingFiles;
-	}
-
 	public String getGitUrl(String repositoryPath) throws IOException {
 		String gitConfigPath = repositoryPath + File.separator + objectFactory.getGitFolderConfigPath();
-
+		if (!Files.exists(Path.of(gitConfigPath))) {
+			return null;
+		}
 		try (BufferedReader reader = new BufferedReader(new FileReader(gitConfigPath, StandardCharsets.UTF_8))) {
 			String line;
 			boolean inRemoteSection = false;
@@ -900,8 +929,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 					break;
 				}
 			}
-		} catch (IOException e) {
-			throw e;
 		}
 		return null;
 	}

@@ -53,11 +53,7 @@ public class ObjectFactory {
 
 	private ProxyConfiguration getJenkinsProxyConfiguration() {
 		Jenkins jenkins = Jenkins.get();
-		return jenkins != null ? jenkins.proxy : null;
-	}
-
-	public MultipartEntityBuilder createMultipartBodyBuilder() {
-		return MultipartEntityBuilder.create();
+		return jenkins.proxy;
 	}
 
 	private RequestConfig getRequestConfig(URI uri) {
