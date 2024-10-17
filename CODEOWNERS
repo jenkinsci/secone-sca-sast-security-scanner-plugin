@@ -1,0 +1,12 @@
+##############################################################
+#
+# List of approvers/reviewers for Secone Security Plugin
+#
+##############################################################
+#
+# Learn about CODEOWNERS file format: 
+#  https://help.github.com/en/articles/about-code-owners
+#
+
+# These owners will be the default owners for everything in the repo.
+* @rahuldarekar222 @saurabhthatte007
