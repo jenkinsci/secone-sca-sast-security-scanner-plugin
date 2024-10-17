@@ -1,4 +1,4 @@
-# Sec1 Security
+# Sec1 Security Scanner
 
 [![Sec1](https://digitalassets.sec1.io/sec1-logo.svg)](https://sec1.io)
 
@@ -13,10 +13,10 @@ To use the plugin up you will need to take the following steps in order:
 2. [Configure a Sec1 API Token Credential](#2-configure-a-sec1-api-token-credential)
 3. [Add Sec1 Security to your Project](#3-add-sec1-security-to-your-project)
 
-## 1. Install the SEC1 Security Plugin
+## 1. Install the SEC1 Security Scanner Plugin
 
 - Go to "Manage Jenkins" > "System Configuration" > "Plugins".
-- Search for "Sec1 Security" under "Available plugins".
+- Search for "Sec1 Security Scanner" under "Available plugins".
 - Install the plugin.
 
 ### Custom API Endpoints
