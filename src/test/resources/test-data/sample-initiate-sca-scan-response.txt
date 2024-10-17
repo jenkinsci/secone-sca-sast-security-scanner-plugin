@@ -1,0 +1,9 @@
+[
+    {
+        "uuid": "166c316c9df7-efc4-4de4-87d4-5qr454sd",
+        "urlType": "github",
+        "location": "https://github.com/MOCK-Test/sampleapp",
+        "assetType": "scm",
+        "assetSubtype": null
+    }
+]

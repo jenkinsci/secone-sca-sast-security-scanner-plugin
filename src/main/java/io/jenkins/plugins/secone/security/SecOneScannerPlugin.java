@@ -15,7 +15,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collection;
 import java.util.Collections;
 
 import org.apache.commons.io.IOUtils;
@@ -81,8 +80,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 	private String apiCredentialsId;
 	private boolean applyThreshold;
 
-	private String scanFileLocation;
-
 	private String actionOnThresholdBreached;
 
 	private Threshold threshold;
@@ -138,15 +135,6 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		this.actionOnThresholdBreached = actionOnThresholdBreached;
 	}
 
-	public String getScanFileLocation() {
-		return scanFileLocation;
-	}
-
-	@DataBoundSetter
-	public void setScanFileLocation(String scanFileLocation) {
-		this.scanFileLocation = scanFileLocation;
-	}
-
 	public boolean isRunSec1SastSecurity() {
 		return runSec1SastSecurity;
 	}
@@ -158,7 +146,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 	// from UI
 	@Override
-	public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws AbortException {
+	public boolean perform(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener)
+			throws IOException, InterruptedException {
 		// printStartMessage(listener);
 		if (threshold != null) {
 			applyThreshold = true;
@@ -167,7 +156,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			objectFactory = new ObjectFactory();
 		}
 		printInAnsiColor = isAnsiColorPluginInstalled(build.getParent());
-		String workingDirectory = getGitWorkingDirectory(build, listener);
+		String workingDirectory = getGitWorkingDirectory(build.getEnvironment(listener), listener);
 		int result = performScan(build, listener, applyThreshold, workingDirectory, runSec1SastSecurity);
 		if (result != 0) {
 			build.setResult(Result.UNSTABLE);
@@ -214,9 +203,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 
 		printInAnsiColor = isAnsiColorPluginInstalled(run.getParent());
 
-		if (StringUtils.isBlank(scanFileLocation)) {
-			printLogs(listener.getLogger(), "scanFileLocation not configured. Please check your configuration.", "r");
-		}
+		String workingDirectory = getGitWorkingDirectory(env, listener);
 
 		if (StringUtils.isBlank(actionOnThresholdBreached)) {
 			printLogs(listener.getLogger(), "actionOnThresholdBreached is not set. Default action is fail.", "g");
@@ -228,7 +215,7 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 			}
 		}
 
-		int result = performScan(run, listener, applyThreshold, scanFileLocation, runSec1SastSecurity);
+		int result = performScan(run, listener, applyThreshold, workingDirectory, runSec1SastSecurity);
 		if (result != 0) {
 			run.setResult(Result.UNSTABLE);
 		}
@@ -877,13 +864,8 @@ public class SecOneScannerPlugin extends Builder implements SimpleBuildStep {
 		return StringUtils.substring(scmUrl, subUrlLocation);
 	}
 
-	private String getGitWorkingDirectory(AbstractBuild<?, ?> build, TaskListener listener) throws AbortException {
-		try {
-			EnvVars envVars = build.getEnvironment(listener);
-			return envVars.get("WORKSPACE");
-		} catch (IOException | InterruptedException e) {
-			throw new AbortException(getErrorMessageInAnsi("Issue while accessing workspace. Failing the build."));
-		}
+	private String getGitWorkingDirectory(EnvVars env, TaskListener listener) {
+		return env.get("WORKSPACE");
 	}
 
 	private HttpResponse triggerScaScan(String apiUrl, String inputParamsMap, String sec1ApiKey) {

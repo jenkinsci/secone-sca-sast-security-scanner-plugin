@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
 
 	<parent>
@@ -13,8 +15,11 @@
 	<version>${changelist}</version>
 	<packaging>hpi</packaging>
 
-	<name>Sec1 Security</name>
-	<description>The Sec1 Security plugin provides both SCA and SAST capabilities, enabling teams to scan SCM repositories for open-source vulnerabilities and analyze code to detect security issues early in development.</description>
+	<name>Sec1 Security Scanner</name>
+	<description>The Sec1 Security plugin provides both SCA and SAST
+		capabilities, enabling teams to scan SCM repositories for open-source
+		vulnerabilities and analyze code to detect security issues early in
+		development.</description>
 	<licenses>
 		<license>
 			<name>Apache-2.0</name>
@@ -80,4 +85,29 @@
 			<url>https://repo.jenkins-ci.org/public/</url>
 		</pluginRepository>
 	</pluginRepositories>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.openrewrite.maven</groupId>
+				<artifactId>rewrite-maven-plugin</artifactId>
+				<version>5.42.0</version>
+				<configuration>
+					<exportDatatables>true</exportDatatables>
+					<activeRecipes>
+						<recipe>
+							org.openrewrite.jenkins.github.AddTeamToCodeowners</recipe>
+					</activeRecipes>
+				</configuration>
+				<dependencies>
+					<dependency>
+						<groupId>org.openrewrite.recipe</groupId>
+						<artifactId>rewrite-jenkins</artifactId>
+						<version>0.14.1</version>
+					</dependency>
+				</dependencies>
+			</plugin>
+		</plugins>
+	</build>
+
 </project>

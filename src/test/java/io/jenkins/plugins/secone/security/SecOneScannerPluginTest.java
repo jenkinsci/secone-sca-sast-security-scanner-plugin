@@ -86,6 +86,9 @@ public class SecOneScannerPluginTest {
 	private org.apache.http.HttpEntity scaHttpEntity;
 
 	@Mock
+	private org.apache.http.HttpEntity scaStatusHttpEntity;
+
+	@Mock
 	private org.apache.http.HttpEntity sastHttpEntity;
 
 	@Mock
@@ -103,7 +106,9 @@ public class SecOneScannerPluginTest {
 
 	private static InputStream sampleSastReportStream;
 
-	private static InputStream sampleInitiateScanResponseStream;
+	private static InputStream sampleInitiateSastScanResponseStream;
+
+	private static InputStream sampleInitiateScaScanResponseStream;
 
 	@Before
 	public void setUp() throws URISyntaxException, FileNotFoundException {
@@ -113,7 +118,9 @@ public class SecOneScannerPluginTest {
 		sampleScaReportStream = new FileInputStream(WORKSPACE_DIRECTORY_LOCATION + "/sampleapp-sca-report.txt");
 		sampleSastReportStream = new FileInputStream(WORKSPACE_DIRECTORY_LOCATION + "/sampleapp-sast-report.txt");
 
-		sampleInitiateScanResponseStream = new FileInputStream(
+		sampleInitiateScaScanResponseStream = new FileInputStream(
+				WORKSPACE_DIRECTORY_LOCATION + "/sample-initiate-sca-scan-response.txt");
+		sampleInitiateSastScanResponseStream = new FileInputStream(
 				WORKSPACE_DIRECTORY_LOCATION + "/sample-initiate-sast-scan-response.txt");
 		plugin = new SecOneScannerPlugin("customCredentialsId", objectFactory, false);
 		when(taskListener.getLogger()).thenReturn(mock(PrintStream.class));
@@ -175,7 +182,6 @@ public class SecOneScannerPluginTest {
 	public void testScaScanWithThresholdWhereStatusActionIsContinue() throws Exception {
 		plugin.setApplyThreshold(true);
 		prepareScaScanSetup();
-		// fail build if threshold breached
 		Threshold threshold = new Threshold("0", "10", "", "", "continue");
 
 		plugin.setThreshold(threshold);
@@ -203,36 +209,28 @@ public class SecOneScannerPluginTest {
 
 		when(apiKeyCred.getSecret().getPlainText()).thenReturn("testApiKey");
 
-		String manifestUrl = envVars.get("SEC1_INSTANCE_URL") + "/rest/foss/supported-manifest";
-		String responseBody = "{\"data\": [\"pom.xml\"]}";
-		ResponseEntity<String> responseEntity = ResponseEntity.ok(responseBody);
 		HttpHeaders headers = new HttpHeaders();
 		headers.set("sec1-api-key", "testApiKey");
-
-		RestTemplate restTemplate = mock(RestTemplate.class);
-		when(objectFactory.createRestTemplate()).thenReturn(restTemplate);
-
-		when(restTemplate.exchange(eq(manifestUrl), eq(HttpMethod.GET), any(HttpEntity.class), eq(String.class)))
-				.thenReturn(responseEntity);
 
 		HttpPost httpPost = mock(HttpPost.class);
 
 		when(objectFactory.createHttpPost(anyString())).thenReturn(httpPost);
 
 		CloseableHttpResponse httpResponse = mock(CloseableHttpResponse.class);
+		CloseableHttpResponse scaStatusHttpResponse = mock(CloseableHttpResponse.class);
 
 		CloseableHttpClient client = mock(CloseableHttpClient.class);
 		when(objectFactory.createHttpClient(any(URI.class))).thenReturn(client);
 
-		when(client.execute(httpPost)).thenReturn(httpResponse);
+		when(client.execute(httpPost)).thenReturn(httpResponse).thenReturn(scaStatusHttpResponse);
 
 		StatusLine statusLine = mock(StatusLine.class);
 		when(httpResponse.getStatusLine()).thenReturn(statusLine);
 		when(statusLine.getStatusCode()).thenReturn(200);
-
 		when(httpResponse.getEntity()).thenReturn(scaHttpEntity);
-
-		when(scaHttpEntity.getContent()).thenReturn(sampleScaReportStream);
+		when(scaStatusHttpResponse.getEntity()).thenReturn(scaStatusHttpEntity);
+		when(scaHttpEntity.getContent()).thenReturn(sampleInitiateScaScanResponseStream);
+		when(scaStatusHttpEntity.getContent()).thenReturn(sampleScaReportStream);
 
 		when(objectFactory.getGitFolderConfigPath()).thenReturn("config");
 
@@ -312,24 +310,15 @@ public class SecOneScannerPluginTest {
 
 		when(apiKeyCred.getSecret().getPlainText()).thenReturn("testApiKey");
 
-		String manifestUrl = envVars.get("SEC1_INSTANCE_URL") + "/rest/foss/supported-manifest";
-		String responseBody = "{\"data\": [\"pom.xml\"]}";
-		ResponseEntity<String> responseEntity = ResponseEntity.ok(responseBody);
 		HttpHeaders headers = new HttpHeaders();
 		headers.set("sec1-api-key", "testApiKey");
 
-		RestTemplate restTemplate = mock(RestTemplate.class);
-		when(objectFactory.createRestTemplate()).thenReturn(restTemplate);
-
-		when(restTemplate.exchange(eq(manifestUrl), eq(HttpMethod.GET), any(HttpEntity.class), eq(String.class)))
-				.thenReturn(responseEntity);
-
-		
 		HttpPost httpPost = mock(HttpPost.class);
 
 		when(objectFactory.createHttpPost(anyString())).thenReturn(httpPost);
 
 		CloseableHttpResponse scaHttpResponse = mock(CloseableHttpResponse.class);
+		CloseableHttpResponse scaStatusHttpResponse = mock(CloseableHttpResponse.class);
 		CloseableHttpResponse sastHttpResponse = mock(CloseableHttpResponse.class);
 		CloseableHttpResponse sastStatusHttpResponse = mock(CloseableHttpResponse.class);
 
@@ -337,8 +326,8 @@ public class SecOneScannerPluginTest {
 		when(objectFactory.createHttpClient(any(URI.class))).thenReturn(client);
 
 		// when(client.execute(httpPost)).thenReturn(scaHttpResponse);
-		when(client.execute(any(HttpPost.class))).thenReturn(scaHttpResponse).thenReturn(sastHttpResponse)
-				.thenReturn(sastStatusHttpResponse);
+		when(client.execute(any(HttpPost.class))).thenReturn(scaHttpResponse).thenReturn(scaStatusHttpResponse)
+				.thenReturn(sastHttpResponse).thenReturn(sastStatusHttpResponse);
 
 		StatusLine statusLine = mock(StatusLine.class);
 		when(scaHttpResponse.getStatusLine()).thenReturn(statusLine);
@@ -346,11 +335,12 @@ public class SecOneScannerPluginTest {
 		when(statusLine.getStatusCode()).thenReturn(200);
 
 		when(scaHttpResponse.getEntity()).thenReturn(scaHttpEntity);
+		when(scaStatusHttpResponse.getEntity()).thenReturn(scaStatusHttpEntity);
 		when(sastHttpResponse.getEntity()).thenReturn(sastHttpEntity);
 		when(sastStatusHttpResponse.getEntity()).thenReturn(sastStatusHttpEntity);
-
-		when(scaHttpEntity.getContent()).thenReturn(sampleScaReportStream);
-		when(sastHttpEntity.getContent()).thenReturn(sampleInitiateScanResponseStream);
+		when(scaHttpEntity.getContent()).thenReturn(sampleInitiateScaScanResponseStream);
+		when(scaStatusHttpEntity.getContent()).thenReturn(sampleScaReportStream);
+		when(sastHttpEntity.getContent()).thenReturn(sampleInitiateSastScanResponseStream);
 		when(sastStatusHttpEntity.getContent()).thenReturn(sampleSastReportStream);
 		when(objectFactory.getGitFolderConfigPath()).thenReturn("config");
 
@@ -389,12 +379,6 @@ public class SecOneScannerPluginTest {
 
 	@Test(expected = AbortException.class)
 	public void testPerformFromScriptException() throws Exception {
-		plugin.perform(run, filePath, envVars, launcher, taskListener);
-	}
-
-	@Test(expected = AbortException.class)
-	public void testPerformFromScriptNoScanFileLocation() throws Exception {
-		plugin.setScanFileLocation("");
 		plugin.perform(run, filePath, envVars, launcher, taskListener);
 	}
 
